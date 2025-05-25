@@ -39,6 +39,18 @@ const ChiSquareVisualization = ({ analysis }) => {
   }
 
   const df = analysis.degreesOfFreedom;
+  if (df < 1) {
+    return (
+      <Card className="rounded-lg shadow-md bg-white">
+        <CardContent className="p-4">
+          <Typography variant="body1" className="text-red-500 text-center">
+            Ошибка: Степень свободы должна быть больше или равна 1
+          </Typography>
+        </CardContent>
+      </Card>
+    );
+  }
+
   const significanceLevel = analysis.significanceLevel || 0.05;
   const chiSquareValue = analysis.chiSquareValue;
   const criticalValue = jStat.chisquare.inv(1 - significanceLevel, df);
@@ -46,13 +58,13 @@ const ChiSquareVisualization = ({ analysis }) => {
   const step = maxX > 50 ? 1 : 0.5;
   const xValues = Array(Math.ceil(maxX / step)).fill(0).map((_, i) => i * step);
 
-  // Генерация кривых для разных степеней свободы
+  // Ограничим степени свободы: от df-4 до df, но не меньше 1
   const degreesOfFreedom = Array.from({ length: 5 }, (_, i) => Math.max(df - (4 - i), 1));
   const colors = ['#ff6384', '#36a2eb', '#ffce56', '#4bc0c0', '#9966ff'];
 
-  const datasets = degreesOfFreedom.map((df, index) => ({
-    label: `χ² (df=${df})`,
-    data: xValues.map(x => jStat.chisquare.pdf(x, df) || 0),
+  const datasets = degreesOfFreedom.map((dfVal, index) => ({
+    label: `χ² (df=${dfVal})`,
+    data: xValues.map(x => jStat.chisquare.pdf(x, dfVal) || 0),
     borderColor: colors[index % colors.length],
     backgroundColor: colors[index % colors.length],
     borderWidth: 2,
@@ -63,7 +75,6 @@ const ChiSquareVisualization = ({ analysis }) => {
     pointHoverBorderWidth: 2,
   }));
 
-  // Добавление ключевых точек
   const keyPoints = [
     {
       x: chiSquareValue,
@@ -91,7 +102,6 @@ const ChiSquareVisualization = ({ analysis }) => {
     borderWidth: 0
   });
 
-  // Аннотации для графика
   const annotations = [
     {
       type: 'line',
@@ -149,7 +159,6 @@ const ChiSquareVisualization = ({ analysis }) => {
     }
   ];
 
-  // Опции для tooltip
   const tooltipCallbacks = {
     label: (context) => {
       const label = context.dataset.label || '';
@@ -172,6 +181,10 @@ const ChiSquareVisualization = ({ analysis }) => {
     }
   };
 
+  // Адаптивный шаг для оси y
+  const maxDensity = Math.max(...datasets[0].data); // Максимальная плотность для df
+  const yStep = Math.max(0.01, maxDensity / 5); // Динамический шаг
+
   return (
     <Card className="rounded-lg shadow-md bg-white">
       <CardContent className="p-4">
@@ -190,7 +203,9 @@ const ChiSquareVisualization = ({ analysis }) => {
                   ? `n=${analysis.parameters.n?.toFixed(2) || 'N/A'}, p=${analysis.parameters.p?.toFixed(4) || 'N/A'}`
                   : analysis.distribution === 'Poisson'
                   ? `λ=${analysis.parameters.lambda?.toFixed(2) || 'N/A'}`
-                  : `μ=${analysis.parameters.mean?.toFixed(2) || 'N/A'}, σ=${analysis.parameters.stdDev?.toFixed(2) || 'N/A'}`
+                  : analysis.distribution === 'NegativeBinomial'
+                  ? `r=${analysis.parameters.r?.toFixed(2) || 'N/A'}, p=${analysis.parameters.p?.toFixed(4) || 'N/A'}`
+                  : 'N/A'
               }
             </Typography>
           </div>
@@ -221,7 +236,7 @@ const ChiSquareVisualization = ({ analysis }) => {
         </Box>
 
         <Typography variant="h6" className="text-gray-800 font-semibold mt-4 mb-2">
-          Распределение хи-квадрат
+          Распределение хи-квадрат (df от {degreesOfFreedom[0]} до {degreesOfFreedom[4]})
         </Typography>
         
         <div style={{ height: '400px', position: 'relative' }}>
@@ -298,7 +313,7 @@ const ChiSquareVisualization = ({ analysis }) => {
                   },
                   beginAtZero: true,
                   ticks: {
-                    stepSize: 0.05,
+                    stepSize: yStep,
                     callback: (value) => Number(value).toFixed(3)
                   }
                 }
