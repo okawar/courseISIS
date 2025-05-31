@@ -25,14 +25,39 @@ ChartJS.register(
   annotationPlugin
 );
 
+// ИСПРАВЛЕНО: получаем правильные степени свободы для выбранного распределения
+const getDistributionDF = (distribution, analysis) => {
+  // Пытаемся получить df из результатов анализа
+  if (analysis.chiSquareResults && analysis.chiSquareResults[distribution]) {
+    return analysis.chiSquareResults[distribution].degreesOfFreedom;
+  }
+  
+  // Fallback к объекту degreesOfFreedom
+  if (typeof analysis.degreesOfFreedom === 'object') {
+    return analysis.degreesOfFreedom[distribution];
+  }
+  
+  // ИСПРАВЛЕНО: правильный расчет df по типу распределения
+  if (distribution === 'Binomial') {
+    return Math.max(1, (analysis.validBins || 11) - 1 - 2); // 8 для биномиального
+  } else if (distribution === 'Poisson') {
+    return Math.max(1, (analysis.validBins || 11) - 1 - 1); // 9 для Пуассона
+  } else if (distribution === 'NegativeBinomial') {
+    return Math.max(1, (analysis.validBins || 12) - 1 - 2); // 9 для отрицательного биномиального
+  }
+  
+  // Последний fallback
+  return analysis.degreesOfFreedom || 9;
+};
+
 const ChiSquareVisualization = ({ analysis }) => {
   // Исправлена проверка наличия данных
-  if (!analysis || !analysis.distribution || !isFinite(analysis.chiSquareValues?.[analysis.distribution]) || !isFinite(analysis.degreesOfFreedom)) {
+  if (!analysis || !analysis.distribution || !isFinite(analysis.chiSquareValues?.[analysis.distribution])) {
     return (
       <Card className="rounded-lg shadow-md bg-white">
         <CardContent className="p-4">
           <Typography variant="body1" className="text-gray-500 text-center">
-            Недостаточно данных для анализа
+            Нет данных для анализа хи-квадрат
           </Typography>
         </CardContent>
       </Card>
@@ -40,7 +65,7 @@ const ChiSquareVisualization = ({ analysis }) => {
   }
 
   const distribution = analysis.distribution;
-  const df = analysis.degreesOfFreedom; // Исправлено - это число, не объект
+  const df = getDistributionDF(distribution, analysis); // ИСПРАВЛЕНО: получаем правильные df
   const chiSquareValue = analysis.chiSquareValues[distribution];
   const pValue = analysis.pValues[distribution];
   const significanceLevel = analysis.significanceLevel || 0.05;
@@ -50,7 +75,7 @@ const ChiSquareVisualization = ({ analysis }) => {
       <Card className="rounded-lg shadow-md bg-white">
         <CardContent className="p-4">
           <Typography variant="body1" className="text-red-500 text-center">
-            Ошибка: Степень свободы должна быть больше или равна 1
+            Некорректные степени свободы: {df}
           </Typography>
         </CardContent>
       </Card>
@@ -230,7 +255,7 @@ const ChiSquareVisualization = ({ analysis }) => {
           </div>
           <div>
             <Typography variant="subtitle1" className="text-gray-700">
-              <strong>Степени свободы:</strong> {df}
+              <strong>Степени свободы:</strong> {df} {/* ИСПРАВЛЕНО: используем правильные df */}
             </Typography>
             <Typography variant="subtitle1" className="text-gray-700">
               <strong>Уровень значимости:</strong> {significanceLevel.toFixed(2)}
@@ -257,9 +282,10 @@ const ChiSquareVisualization = ({ analysis }) => {
         </Box>
 
         <Typography variant="h6" className="text-gray-800 font-semibold mt-4 mb-2">
-          Распределение хи-квадрат (df={df})
+          Распределение хи-квадрат (df={df}) {/* ИСПРАВЛЕНО: показываем правильные df */}
         </Typography>
         
+        {/* График с правильными df */}
         <div style={{ height: '400px', position: 'relative' }}>
           <Line
             data={{ labels: xValues, datasets }}

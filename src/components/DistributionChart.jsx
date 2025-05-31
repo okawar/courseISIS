@@ -114,14 +114,14 @@ const DistributionChart = ({ data, analysis, isLoading }) => {
         // ИСПРАВЛЕНИЕ: проверяем корректность параметров
         if (r > 0 && p > 0 && p < 1) {
           // p здесь - вероятность успеха, но jStat ожидает вероятность неуспеха
-          prob += jStat.negbin.pdf(i, r, 1 - p);
+          prob += jStat.negbin.pdf(i, r, p);
         }
       }
       return prob;
     }
     // ИСПРАВЛЕНИЕ: аналогично для одиночных значений
     if (r > 0 && p > 0 && p < 1) {
-      return jStat.negbin.pdf(k, r, 1 - p);
+      return jStat.negbin.pdf(k, r, p);
     }
     return 0;
   });

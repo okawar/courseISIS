@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { log } from '../utils/Logger';
 
-const AutoSave = ({ data, analysis, enabled = true, intervalMs = 30000 }) => {
+const AutoSave = ({ data, analysis, enabled = true, intervalMs = 60000 }) => {
   const intervalRef = useRef(null);
   const lastSaveRef = useRef(null);
 

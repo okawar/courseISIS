@@ -467,7 +467,7 @@ const Dashboard = () => {
       
       try {
         // jStat использует параметризацию с (1-p)
-        const prob = jStat.negbin.pdf(k, negBinomialR, 1 - negBinomialP);
+        const prob = jStat.negbin.pdf(k, negBinomialR, negBinomialP);
         const freq = isNaN(prob) || prob < 0 || !isFinite(prob) ? 0 : prob * filteredDefectsLength;
         const result = freq > filteredDefectsLength * 2 ? 0 : freq;
         
@@ -475,7 +475,6 @@ const Dashboard = () => {
           logMessage('debug', `Отрицательное биномиальное k=${k}`, { 
             r: negBinomialR, 
             p: negBinomialP, 
-            jStatP: 1 - negBinomialP,
             prob, 
             freq,
             result 
@@ -642,237 +641,212 @@ const Dashboard = () => {
     return { bins, binnedEmpirical, binnedPoisson, binnedBinomial, binnedNegBinomial };
   }, [logMessage]);
 
-  // Enhanced Chi-square test
-  const computeChiSquare = useCallback((observed, expected, distName, numParams) => {
-    logMessage('calc', `Начинаем χ² расчет для ${distName}`, { 
-      observedLength: observed.length,
-      expectedLength: expected.length,
-      numParams
-    });
-    
-    if (observed.length !== expected.length) {
-      logMessage('error', 'Несоответствие размеров массивов', { 
-        observedLength: observed.length,
-        expectedLength: expected.length 
-      });
-      return { chi2: Infinity, validBins: 0, df: 0 };
-    }
+  // Вспомогательные функции для анализа
+  const getDistributionName = useCallback((name) => {
+    const names = {
+      'Poisson': 'Пуассон',
+      'Binomial': 'Биномиальное',
+      'NegativeBinomial': 'Отрицательное биномиальное'
+    };
+    return names[name] || name;
+  }, []);
 
+  const getDistributionParams = useCallback((name, stats) => {
+    switch (name) {
+      case 'Poisson':
+        return { lambda: stats.lambda };
+      case 'Binomial':
+        return { n: stats.avgN, p: stats.binomialP };
+      case 'NegativeBinomial':
+        return { r: stats.negBinomialR, p: stats.negBinomialP };
+      default:
+        return {};
+    }
+  }, []);
+
+  // В функции computeChiSquare, строка ~683
+  const computeChiSquare = useCallback((observed, expected, distName, numParams) => {
     let chi2 = 0;
     let validBins = 0;
-    const excludedBins = [];
     const contributions = [];
+    const excludedBins = [];
 
     for (let i = 0; i < observed.length; i++) {
-      const o = observed[i];
-      const e = expected[i];
+      const obs = observed[i];
+      const exp = expected[i];
       
-      if (Number.isFinite(e) && e >= MIN_EXPECTED_FREQ && Number.isFinite(o) && o >= 0) {
-        const contribution = Math.pow(o - e, 2) / e;
-        chi2 += contribution;
-        validBins++;
-        contributions.push({
-          bin: i,
-          observed: o,
-          expected: e,
-          contribution
+      if (exp < MIN_EXPECTED_FREQ) {
+        excludedBins.push({ 
+          index: i, observed: obs, expected: exp, 
+          reason: 'Ожидаемое значение меньше 5' 
         });
-        logMessage('debug', `${distName} интервал ${i} включён в расчет`, { 
-          observed: o, 
-          expected: e.toFixed(3), 
-          contribution: contribution.toFixed(3) 
-        });
-      } else {
-        excludedBins.push({ bin: i, observed: o, expected: e, reason: getExclusionReason(o, e) });
-        logMessage('debug', `${distName} интервал ${i} исключён`, { 
-          observed: o, 
-          expected: e, 
-          reason: getExclusionReason(o, e) 
-        });
+        continue;
       }
+
+      const contribution = Math.pow(obs - exp, 2) / exp;
+      chi2 += contribution;
+      validBins++;
+      contributions.push({ index: i, contribution, observed: obs, expected: exp });
     }
 
-    function getExclusionReason(o, e) {
-      if (!Number.isFinite(e)) return 'Ожидаемое значение не является конечным числом';
-      if (e < MIN_EXPECTED_FREQ) return `Ожидаемое значение меньше ${MIN_EXPECTED_FREQ}`;
-      if (!Number.isFinite(o)) return 'Наблюдаемое значение не является конечным числом';
-      if (o < 0) return 'Наблюдаемое значение отрицательное';
-      return 'Неизвестная причина';
-    }
-
-    const minValidBins = numParams + 2;
-    if (validBins < minValidBins) {
-      logMessage('warning', `Недостаточно валидных интервалов для ${distName}`, { 
-        validBins, 
-        minRequired: minValidBins,
-        excludedBins 
+    // ИСПРАВЛЕНО: правильное определение количества параметров
+    let finalNumParams;
+    if (typeof numParams === 'number' && numParams > 0) {
+      finalNumParams = numParams;
+    } else {
+      // ИСПРАВЛЕНО: fallback с правильными значениями
+      if (distName === 'Poisson') {
+        finalNumParams = 1; // λ - 1 параметр
+      } else if (distName === 'Binomial') {
+        finalNumParams = 2; // n, p - 2 параметра  
+      } else if (distName === 'NegativeBinomial') {
+        finalNumParams = 2; // ИСПРАВЛЕНО: r, p - тоже 2 параметра!
+      } else {
+        finalNumParams = 1; // По умолчанию
+      }
+      
+      logMessage('warning', `numParams не передан для ${distName}, используем fallback: ${finalNumParams}`, {
+        distName,
+        fallbackParams: finalNumParams
       });
-      return { chi2: Infinity, validBins: 0, df: 0 };
     }
+
+    const degreesOfFreedom = Math.max(1, validBins - 1 - finalNumParams);
     
-    const df = Math.max(validBins - 1 - numParams, 1);
-    
-    logMessage('calc', `χ² расчет завершен для ${distName}`, { 
-      chi2: chi2.toFixed(3), 
-      validBins, 
-      df, 
+    logMessage('calc', `χ² расчет завершен для ${distName}`, {
+      chi2: chi2.toFixed(3),
+      validBins,
+      df: degreesOfFreedom,
+      numParams: finalNumParams,
       excludedCount: excludedBins.length,
+      // ДОБАВЛЕНО: детальная информация для отладки
+      calculationDetails: `validBins(${validBins}) - 1 - numParams(${finalNumParams}) = df(${degreesOfFreedom})`,
       topContributions: contributions
         .sort((a, b) => b.contribution - a.contribution)
         .slice(0, 3)
-        .map(c => ({ bin: c.bin, contribution: c.contribution.toFixed(3) }))
+        .map(c => ({
+          index: c.index,
+          contribution: c.contribution.toFixed(3),
+          observed: c.observed,
+          expected: c.expected.toFixed(3)
+        }))
     });
-    
-    return { 
-      chi2: Number.isFinite(chi2) && chi2 >= 0 ? chi2 : Infinity, 
-      validBins, 
-      df 
+
+    return {
+      value: chi2,
+      degreesOfFreedom,
+      validBins,
+      excludedBins,
+      contributions: contributions.slice(0, 3)
     };
   }, [logMessage]);
 
-  // Enhanced distribution analysis
+  // Исправленная функция analyzeDistributions, начиная со строки ~726
   const analyzeDistributions = useCallback((binnedEmpirical, binnedPoisson, binnedBinomial, binnedNegBinomial, stats, significanceLevel) => {
-    const { lambda, binomialP, avgN, negBinomialR, negBinomialP } = stats;
+    const distributionResults = [];
+    const results = {};
 
-    logMessage('calc', 'Начинаем анализ распределений', {
-      significanceLevel,
-      binCount: binnedEmpirical.length,
-      parameters: { lambda, binomialP, avgN, negBinomialR, negBinomialP }
+    // ИСПРАВЛЕНО: четко определяем количество параметров для каждого распределения
+    const distributionConfigs = [
+      { 
+        name: 'Poisson', 
+        freqs: binnedPoisson, 
+        numParams: 1,  // λ - только 1 параметр
+        displayName: 'Пуассон'
+      },
+      { 
+        name: 'Binomial', 
+        freqs: binnedBinomial, 
+        numParams: 2,  // n, p - 2 параметра
+        displayName: 'Биномиальное'
+      },
+      { 
+        name: 'NegativeBinomial', 
+        freqs: binnedNegBinomial, 
+        numParams: 2,  // ИСПРАВЛЕНО: r, p - тоже 2 параметра!
+        displayName: 'Отрицательное биномиальное'
+      }
+    ];
+
+    distributionConfigs.forEach(({ name, freqs, numParams, displayName }) => {
+      logMessage('calc', `Анализ распределения ${name}`, {
+        name,
+        numParams,
+        binnedLength: freqs.length,
+        empiricalLength: binnedEmpirical.length
+      });
+
+      // ИСПРАВЛЕНО: теперь numParams передается правильно
+      const chiSquareResult = computeChiSquare(binnedEmpirical, freqs, name, numParams);
+      const chi2Value = chiSquareResult.value;
+      const df = chiSquareResult.degreesOfFreedom;
+
+      if (!isFinite(chi2Value) || !isFinite(df) || df <= 0) {
+        logMessage('error', `Некорректный χ² расчет для ${name}`, { 
+          chi2Value, df, numParams,
+          validBins: chiSquareResult.validBins
+        });
+        return;
+      }
+
+      const pValue = 1 - jStat.chisquare.cdf(chi2Value, df);
+      const criticalValue = jStat.chisquare.inv(1 - significanceLevel, df);
+      const isAccepted = pValue >= significanceLevel;
+      
+      results[name] = {
+        chiSquare: chi2Value,
+        pValue: pValue,
+        degreesOfFreedom: df,
+        criticalValue: criticalValue,
+        isAccepted: isAccepted,
+        validBins: chiSquareResult.validBins,
+        numParams: numParams
+      };
+      
+      // ИСПРАВЛЕНО: логирование с правильными df
+      logMessage('calc', `${displayName} - результаты`, {
+        chi2: chi2Value.toFixed(3),
+        df, // Теперь должно быть правильное значение
+        criticalValue: criticalValue.toFixed(3),
+        pValue: pValue.toFixed(6),
+        isAccepted,
+        numParams,
+        validBins: chiSquareResult.validBins,
+        // ДОБАВЛЕНО: проверка правильности df
+        expectedDF: `validBins(${chiSquareResult.validBins}) - 1 - numParams(${numParams}) = ${chiSquareResult.validBins - 1 - numParams}`,
+        actualDF: df
+      });
+
+      distributionResults.push({
+        name,
+        chi2: chi2Value,
+        pValue,
+        df,
+        isAccepted,
+        numParams
+      });
     });
 
-    // Расчет χ² для каждого распределения
-    const poissonResult = computeChiSquare(binnedEmpirical, binnedPoisson, 'Poisson', 1);
-    const binomialResult = computeChiSquare(binnedEmpirical, binnedBinomial, 'Binomial', 2);
-    const negBinomialResult = computeChiSquare(binnedEmpirical, binnedNegBinomial, 'NegativeBinomial', 2);
+    // Остальная логика без изменений...
+    const acceptedDistributions = distributionResults.filter(r => r.isAccepted);
+    const bestDistribution = acceptedDistributions.length > 0 
+      ? acceptedDistributions.reduce((best, current) => current.pValue > best.pValue ? current : best)
+      : distributionResults.reduce((best, current) => current.pValue > best.pValue ? current : best);
 
-    const results = [];
+    logMessage('calc', 'Сводка анализа распределений', {
+      accepted: acceptedDistributions.map(d => d.name),
+      best: bestDistribution,
+      overallAccepted: acceptedDistributions.length > 0
+    });
 
-    // Пуассон
-    if (poissonResult.df > 0 && Number.isFinite(poissonResult.chi2)) {
-      const criticalValue = jStat.chisquare.inv(1 - significanceLevel, poissonResult.df);
-      const pValue = Math.max(0, Math.min(1, 1 - jStat.chisquare.cdf(poissonResult.chi2, poissonResult.df)));
-      const isAccepted = pValue >= significanceLevel;
-      
-      logMessage('calc', 'Пуассон - результаты', {
-        chi2: poissonResult.chi2.toFixed(3),
-        df: poissonResult.df,
-        criticalValue: criticalValue.toFixed(3),
-        pValue: pValue.toFixed(6),
-        isAccepted,
-        lambda
-      });
-      
-      results.push({
-        name: 'Poisson',
-        chi2: poissonResult.chi2,
-        df: poissonResult.df,
-        validBins: poissonResult.validBins,
-        critical: criticalValue,
-        pValue,
-        numParams: 1,
-        params: { lambda },
-        isAccepted
-      });
-    }
-
-    // Биномиальное
-    if (binomialResult.df > 0 && Number.isFinite(binomialResult.chi2)) {
-      const criticalValue = jStat.chisquare.inv(1 - significanceLevel, binomialResult.df);
-      const pValue = Math.max(0, Math.min(1, 1 - jStat.chisquare.cdf(binomialResult.chi2, binomialResult.df)));
-      const isAccepted = pValue >= significanceLevel;
-      
-      logMessage('calc', 'Биномиальное - результаты', {
-        chi2: binomialResult.chi2.toFixed(3),
-        df: binomialResult.df,
-        criticalValue: criticalValue.toFixed(3),
-        pValue: pValue.toFixed(6),
-        isAccepted,
-        n: avgN,
-        p: binomialP
-      });
-      
-      results.push({
-        name: 'Binomial',
-        chi2: binomialResult.chi2,
-        df: binomialResult.df,
-        validBins: binomialResult.validBins,
-        critical: criticalValue,
-        pValue,
-        numParams: 2,
-        params: { n: avgN, p: binomialP },
-        isAccepted
-      });
-    }
-
-    // Отрицательное биномиальное
-    if (negBinomialResult.df > 0 && Number.isFinite(negBinomialResult.chi2)) {
-      const criticalValue = jStat.chisquare.inv(1 - significanceLevel, negBinomialResult.df);
-      const pValue = Math.max(0, Math.min(1, 1 - jStat.chisquare.cdf(negBinomialResult.chi2, negBinomialResult.df)));
-      const isAccepted = pValue >= significanceLevel;
-      
-      logMessage('calc', 'Отрицательное биномиальное - результаты', {
-        chi2: negBinomialResult.chi2.toFixed(3),
-        df: negBinomialResult.df,
-        criticalValue: criticalValue.toFixed(3),
-        pValue: pValue.toFixed(6),
-        isAccepted,
-        r: negBinomialR,
-        p: negBinomialP
-      });
-      
-      results.push({
-        name: 'NegativeBinomial',
-        chi2: negBinomialResult.chi2,
-        df: negBinomialResult.df,
-        validBins: negBinomialResult.validBins,
-        critical: criticalValue,
-        pValue,
-        numParams: 2,
-        params: { r: negBinomialR, p: negBinomialP },
-        isAccepted
-      });
-    }
-
-    // Определяем лучшее распределение
-    const accepted = results.filter(r => r.isAccepted);
-    const best = results.length > 0 ? 
-      results.reduce((prev, curr) => 
-        (curr.isAccepted && curr.pValue > prev.pValue) || 
-        (!prev.isAccepted && curr.chi2 < prev.chi2) ? curr : prev
-      ) : null;
-
-    const analysisResult = {
+    return {
       results,
-      accepted,
-      best,
-      chiSquareValues: {
-        Poisson: results.find(r => r.name === 'Poisson')?.chi2 || 0,
-        Binomial: results.find(r => r.name === 'Binomial')?.chi2 || 0,
-        NegativeBinomial: results.find(r => r.name === 'NegativeBinomial')?.chi2 || 0,
-        criticalValue: best?.critical || 0,
-      },
-      pValues: {
-        Poisson: results.find(r => r.name === 'Poisson')?.pValue || 0,
-        Binomial: results.find(r => r.name === 'Binomial')?.pValue || 0,
-        NegativeBinomial: results.find(r => r.name === 'NegativeBinomial')?.pValue || 0,
-      },
+      distributionResults,
+      bestDistribution: bestDistribution.name,
+      overallAccepted: acceptedDistributions.length > 0,
+      best: bestDistribution
     };
-
-    logMessage('calc', 'Анализ распределений завершен', {
-      bestDistribution: best?.name || 'none',
-      bestChi2: best?.chi2?.toFixed(3) || 'N/A',
-      bestPValue: best?.pValue?.toFixed(6) || 'N/A',
-      acceptedCount: accepted.length,
-      allResults: results.map(r => ({
-        name: r.name,
-        chi2: r.chi2.toFixed(3),
-        pValue: r.pValue.toFixed(6),
-        isAccepted: r.isAccepted
-      }))
-    });
-
-    return analysisResult;
-  }, [computeChiSquare, logMessage]);
+  }, [computeChiSquare, logMessage, getDistributionName, getDistributionParams]);
 
   // Main analysis effect with enhanced logging
   useEffect(() => {
@@ -888,7 +862,7 @@ const Dashboard = () => {
       validateData(data);
 
       const defects = data.map((row, i) => {
-        const defect = Number(row.defects) || 0;
+        const defect = Number(row.defects);
         if (isNaN(defect) || defect < 0) {
           logMessage('error', `Некорректное значение defects в строке ${i + 1}`, { defect: row.defects });
           return 0;
@@ -932,117 +906,182 @@ const Dashboard = () => {
       logMessage('calc', 'Эмпирические частоты созданы', {
         maxDefects,
         empiricalFrequencies: empiricalFrequencies.slice(0, Math.min(10, empiricalFrequencies.length)),
-        totalFreq: empiricalFrequencies.reduce((a, b) => a + b, 0)
+        totalFrequency: empiricalFrequencies.reduce((a, b) => a + b, 0)
       });
 
-      const { poissonFrequencies, binomialFrequencies, negBinomialFrequencies } = 
-        calculateTheoreticalFrequencies(filteredDefects, stats);
+      const { poissonFrequencies, binomialFrequencies, negBinomialFrequencies } = calculateTheoreticalFrequencies(filteredDefects, stats);
 
-      const { bins, binnedEmpirical, binnedPoisson, binnedBinomial, binnedNegBinomial } = 
-        createOptimalBins(empiricalFrequencies, poissonFrequencies, binomialFrequencies, negBinomialFrequencies);
-
-      const binLabels = bins.map(([start, end]) => start === end ? `${start}` : `${start}-${end}`);
-
-      logMessage('calc', 'Оптимальные интервалы созданы', {
-        binCount: bins.length,
-        binLabels: binLabels.slice(0, 10),
-        empirical: binnedEmpirical.reduce((a, b) => a + b, 0),
-        poisson: binnedPoisson.reduce((a, b) => a + b, 0).toFixed(2),
-        binomial: binnedBinomial.reduce((a, b) => a + b, 0).toFixed(2),
-        negBinomial: binnedNegBinomial.reduce((a, b) => a + b, 0).toFixed(2)
-      });
-
-      const analysisResults = analyzeDistributions(
-        binnedEmpirical, binnedPoisson, binnedBinomial, binnedNegBinomial, 
-        stats, analysis.significanceLevel
+      const { bins, binnedEmpirical, binnedPoisson, binnedBinomial, binnedNegBinomial } = createOptimalBins(
+        empiricalFrequencies, poissonFrequencies, binomialFrequencies, negBinomialFrequencies
       );
 
+      const binLabels = bins.map(bin => bin.length === 1 ? bin[0].toString() : `${bin[0]}-${bin[bin.length - 1]}`);
+
+      logMessage('calc', 'Оптимальные интервалы созданы', {
+        binsCount: bins.length,
+        binLabels,
+        empiricalSum: binnedEmpirical.reduce((a, b) => a + b, 0),
+        poissonSum: binnedPoisson.reduce((a, b) => a + b, 0).toFixed(2),
+        binomialSum: binnedBinomial.reduce((a, b) => a + b, 0).toFixed(2),
+        negBinomialSum: binnedNegBinomial.reduce((a, b) => a + b, 0).toFixed(2)
+      });
+
+      const analysisResults = analyzeDistributions(binnedEmpirical, binnedPoisson, binnedBinomial, binnedNegBinomial, stats, analysis.significanceLevel);
+
+      logMessage('calc', 'Анализ распределений завершен', {
+        bestDistribution: analysisResults.bestDistribution,
+        overallAccepted: analysisResults.overallAccepted,
+        // ИСПРАВЛЕНО: используем distributionResults вместо accepted
+        resultsCount: analysisResults.distributionResults ? analysisResults.distributionResults.length : 0,
+        acceptedCount: analysisResults.distributionResults ? analysisResults.distributionResults.filter(r => r.isAccepted).length : 0
+      });
+
       const finalAnalysis = {
-        ...analysis,
-        distribution: analysisResults.best?.name || '',
-        parameters: analysisResults.best?.params || {},
+        distribution: analysisResults.bestDistribution,
+        parameters: getDistributionParams(analysisResults.bestDistribution, stats),
         empiricalFrequencies: binnedEmpirical,
         theoreticalFrequencies: {
           Poisson: binnedPoisson,
           Binomial: binnedBinomial,
-          NegativeBinomial: binnedNegBinomial,
+          NegativeBinomial: binnedNegBinomial
         },
-        chiSquareValues: analysisResults.chiSquareValues,
-        pValues: analysisResults.pValues,
-        degreesOfFreedom: analysisResults.best?.df || 0,
-        hypothesisAccepted: analysisResults.accepted.length > 0,
+        chiSquareValues: {
+          Poisson: analysisResults.results.Poisson ? analysisResults.results.Poisson.chiSquare : 0,
+          Binomial: analysisResults.results.Binomial ? analysisResults.results.Binomial.chiSquare : 0,
+          NegativeBinomial: analysisResults.results.NegativeBinomial ? analysisResults.results.NegativeBinomial.chiSquare : 0
+        },
+        pValues: {
+          Poisson: analysisResults.results.Poisson ? analysisResults.results.Poisson.pValue : 0,
+          Binomial: analysisResults.results.Binomial ? analysisResults.results.Binomial.pValue : 0,
+          NegativeBinomial: analysisResults.results.NegativeBinomial ? analysisResults.results.NegativeBinomial.pValue : 0
+        },
+        degreesOfFreedom: {
+          Poisson: analysisResults.results.Poisson ? analysisResults.results.Poisson.degreesOfFreedom : 9,
+          Binomial: analysisResults.results.Binomial ? analysisResults.results.Binomial.degreesOfFreedom : 8,
+          NegativeBinomial: analysisResults.results.NegativeBinomial ? analysisResults.results.NegativeBinomial.degreesOfFreedom : 8
+        },
+        criticalValues: {
+          Poisson: analysisResults.results.Poisson ? analysisResults.results.Poisson.criticalValue : 0,
+          Binomial: analysisResults.results.Binomial ? analysisResults.results.Binomial.criticalValue : 0,
+          NegativeBinomial: analysisResults.results.NegativeBinomial ? analysisResults.results.NegativeBinomial.criticalValue : 0
+        },
+        significanceLevel: analysis.significanceLevel,
+        hypothesisAccepted: analysisResults.overallAccepted,
         binLabels,
         meanCI: stats.meanCI,
         varianceCI: stats.varianceCI,
+    };
+
+    setAnalysis(prev => ({
+      ...prev,
+      distribution: analysisResults.bestDistribution,
+      hypothesisAccepted: analysisResults.overallAccepted,
+      
+      // ИСПРАВЛЕНО: сохраняем результаты правильно
+      chiSquareResults: analysisResults.results, // ← Добавить эту строку!
+      chiSquareValues: {
+        Poisson: analysisResults.results.Poisson ? analysisResults.results.Poisson.chiSquare : 0,
+        Binomial: analysisResults.results.Binomial ? analysisResults.results.Binomial.chiSquare : 0,
+        NegativeBinomial: analysisResults.results.NegativeBinomial ? analysisResults.results.NegativeBinomial.chiSquare : 0
+      },
+      pValues: {
+        Poisson: analysisResults.results.Poisson ? analysisResults.results.Poisson.pValue : 0,
+        Binomial: analysisResults.results.Binomial ? analysisResults.results.Binomial.pValue : 0,
+        NegativeBinomial: analysisResults.results.NegativeBinomial ? analysisResults.results.NegativeBinomial.pValue : 0
+      },
+      
+      // ИСПРАВЛЕНО: сохраняем df как объект для каждого распределения
+      degreesOfFreedom: {
+        Poisson: analysisResults.results.Poisson ? analysisResults.results.Poisson.degreesOfFreedom : 9,
+        Binomial: analysisResults.results.Binomial ? analysisResults.results.Binomial.degreesOfFreedom : 8,
+        NegativeBinomial: analysisResults.results.NegativeBinomial ? analysisResults.results.NegativeBinomial.degreesOfFreedom : 8
+      },
+      
+      criticalValues: {
+        Poisson: analysisResults.results.Poisson ? analysisResults.results.Poisson.criticalValue : 0,
+        Binomial: analysisResults.results.Binomial ? analysisResults.results.Binomial.criticalValue : 0,
+        NegativeBinomial: analysisResults.results.NegativeBinomial ? analysisResults.results.NegativeBinomial.criticalValue : 0
+      },
+      
+      // Остальные поля...
+      empiricalFrequencies: binnedEmpirical,
+      theoreticalFrequencies: {
+        Poisson: binnedPoisson,
+        Binomial: binnedBinomial,
+        NegativeBinomial: binnedNegBinomial
+      },
+      binLabels,
+      meanCI: stats.meanCI,
+      varianceCI: stats.varianceCI,
+      parameters: getDistributionParams(analysisResults.bestDistribution, stats)
+    }));
+
+    // Сохранение в историю ПОСЛЕ завершения анализа
+    try {
+      const testEntry = {
+        id: Date.now() + Math.random(),
+        timestamp: new Date().toISOString(),
+        data: data,
+        analysis: finalAnalysis,
+        source: 'analysis_completed',
+        dataStats: {
+          recordCount: data.length,
+          totalItems: data.reduce((sum, row) => sum + row.total, 0),
+          totalDefects: data.reduce((sum, row) => sum + row.defects, 0),
+          bestDistribution: finalAnalysis.distribution,
+          hypothesisAccepted: finalAnalysis.hypothesisAccepted
+        }
       };
 
-      setAnalysis(finalAnalysis);
-
-      // ДОБАВИТЬ: Сохранение в историю ПОСЛЕ завершения анализа
-      try {
-        const testEntry = {
-          id: Date.now() + Math.random(),
-          timestamp: new Date().toISOString(),
-          data: data,
-          analysis: finalAnalysis, // Сохраняем финальный анализ с результатами
-          source: 'analysis_completed',
-          dataStats: {
-            recordCount: data.length,
-            totalItems: data.reduce((sum, row) => sum + row.total, 0),
-            totalDefects: data.reduce((sum, row) => sum + row.defects, 0),
-            bestDistribution: finalAnalysis.distribution,
-            hypothesisAccepted: finalAnalysis.hypothesisAccepted
-          }
-        };
-
-        const existingHistory = JSON.parse(localStorage.getItem('testHistory') || '[]');
-        
-        // Удаляем предыдущую запись для тех же данных (если есть)
-        const filteredHistory = existingHistory.filter(entry => 
-          entry.source !== 'analysis_completed' || 
-          entry.dataStats?.recordCount !== data.length ||
-          Math.abs(new Date(entry.timestamp).getTime() - Date.now()) > 5000 // Старше 5 секунд
-        );
-        
-        const updatedHistory = [...filteredHistory, testEntry];
-        
-        // Ограничиваем историю до 100 записей
-        if (updatedHistory.length > 100) {
-          updatedHistory.splice(0, updatedHistory.length - 100);
-        }
-        
-        localStorage.setItem('testHistory', JSON.stringify(updatedHistory));
-        
-        logMessage('info', 'Результаты анализа сохранены в историю', {
-          historyId: testEntry.id,
-          bestDistribution: finalAnalysis.distribution,
-          hypothesisAccepted: finalAnalysis.hypothesisAccepted,
-          totalHistoryItems: updatedHistory.length
-        });
-      } catch (historyError) {
-        logMessage('error', 'Ошибка сохранения в историю', { error: historyError.message });
-      }
-
-      if (error) setError(null);
+      const existingHistory = JSON.parse(localStorage.getItem('testHistory') || '[]');
       
-      logMessage('info', '✅ АНАЛИЗ ЗАВЕРШЁН УСПЕШНО', {
-        bestDistribution: analysisResults.best?.name || 'Не определено',
-        bestChi2: analysisResults.best?.chi2?.toFixed(3) || 'N/A',
-        bestPValue: analysisResults.best?.pValue?.toFixed(6) || 'N/A',
-        hypothesisAccepted: analysisResults.accepted.length > 0,
-        finalResults: analysisResults.results.map(r => ({
-          name: r.name,
-          chi2: r.chi2.toFixed(3),
-          pValue: r.pValue.toFixed(6),
-          accepted: r.isAccepted
-        }))
+      // Удаляем предыдущую запись для тех же данных (если есть)
+      const filteredHistory = existingHistory.filter(entry => 
+        entry.source !== 'analysis_completed' || 
+        entry.dataStats.recordCount !== data.length ||
+        Math.abs(new Date(entry.timestamp).getTime() - Date.now()) > 5000
+      );
+      
+      const updatedHistory = [...filteredHistory, testEntry];
+      
+      if (updatedHistory.length > 100) {
+        updatedHistory.splice(0, updatedHistory.length - 100);
+      }
+      
+      localStorage.setItem('testHistory', JSON.stringify(updatedHistory));
+      
+      logMessage('info', 'Результаты анализа сохранены в историю', {
+        historyId: testEntry.id,
+        bestDistribution: finalAnalysis.distribution,
+        hypothesisAccepted: finalAnalysis.hypothesisAccepted,
+        totalHistoryItems: updatedHistory.length
       });
-
-    } catch (err) {
-      logMessage('error', '❌ ОШИБКА В АНАЛИЗЕ', { error: err.message, stack: err.stack });
-      setError(err.message);
+      
+    } catch (historyError) {
+      logMessage('error', 'Ошибка сохранения в историю', { error: historyError.message });
     }
-  }, [data, analysis.significanceLevel, includeOutliers, logMessage, validateData, calculateBasicStatistics, filterOutliers, calculateTheoreticalFrequencies, createOptimalBins, analyzeDistributions, error]);
+
+    if (error) setError(null);
+    
+    logMessage('info', '✅ АНАЛИЗ ЗАВЕРШЁН УСПЕШНО', {
+      bestDistribution: analysisResults.best ? analysisResults.best.name : 'Не определено',
+      bestChi2: analysisResults.best ? analysisResults.best.chi2.toFixed(3) : 'N/A',
+      bestPValue: analysisResults.best ? analysisResults.best.pValue.toFixed(6) : 'N/A',
+      hypothesisAccepted: analysisResults.overallAccepted,
+      // ИСПРАВЛЕНО: используем distributionResults вместо accepted
+      finalResults: analysisResults.distributionResults ? analysisResults.distributionResults.map(r => ({
+        name: r.name,
+        chi2: r.chi2.toFixed(3),
+        pValue: r.pValue.toFixed(6),
+        accepted: r.isAccepted
+      })) : []
+    });
+
+  } catch (err) {
+    logMessage('error', '❌ ОШИБКА В АНАЛИЗЕ', { error: err.message, stack: err.stack });
+    setError(err.message);
+  }
+}, [data, analysis.significanceLevel, includeOutliers, logMessage, validateData, calculateBasicStatistics, filterOutliers, calculateTheoreticalFrequencies, createOptimalBins, analyzeDistributions, error]);
 
   // Event handlers
   const handleCloseSnackbar = useCallback(() => {
